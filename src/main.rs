@@ -1,4 +1,4 @@
-use std::collections::{HashSet,HashMap};
+use std::collections::{HashSet, HashMap};
 
 macro_rules! map(
     { $($key:expr => $value:expr),+ } => {
@@ -12,22 +12,22 @@ macro_rules! map(
     };
 );
 
-#[derive(Debug,Copy,Clone,Eq,PartialEq,Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Vr(usize);
 
-#[derive(Debug,Copy,Clone,Eq,PartialEq,Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum Instr {
     Mov(Vr, Vr),
     Add(Vr, Vr),
-    Mul(Vr, Vr)
+    Mul(Vr, Vr),
 }
 
-#[derive(Debug,Clone,Eq,PartialEq,Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Program {
     code: Vec<Instr>,
     vrs: Vec<Vr>,
-    next_vr : usize,
-    input_vrs : Vec<Vr>,
+    next_vr: usize,
+    input_vrs: Vec<Vr>,
 }
 
 impl Program {
@@ -39,7 +39,7 @@ impl Program {
             input_vrs: vec![],
         };
 
-        for _ in [0..num_inputs].iter() {
+        for _ in 0..num_inputs {
             p.make_input_vr();
         }
 
@@ -88,7 +88,7 @@ impl Derive for Program {
         }
 
         // Operations
-        
+
         //Mul
         for vrf in self.vrs.clone() {
             for vrt in self.vrs.clone() {
@@ -134,32 +134,32 @@ impl Simulate for Program {
                 Mov(ref from, to) => {
                     let v_required = match map.get(from) {
                         Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from)
+                        None => panic!("Required register {:?} has no value.", from),
                     };
                     map.insert(to, v_required);
-                },
+                }
                 Mul(ref from, ref to) => {
                     let f_required = match map.get(from) {
                         Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from)
+                        None => panic!("Required register {:?} has no value.", from),
                     };
                     let t_required = match map.get(to) {
                         Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from)
+                        None => panic!("Required register {:?} has no value.", from),
                     };
                     map.insert(*to, f_required * t_required);
-                },
+                }
                 Add(ref from, ref to) => {
                     let f_required = match map.get(from) {
                         Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from)
+                        None => panic!("Required register {:?} has no value.", from),
                     };
                     let t_required = match map.get(to) {
                         Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from)
+                        None => panic!("Required register {:?} has no value.", from),
                     };
                     map.insert(*to, f_required + t_required);
-                },
+                }
                 _ => unimplemented!(),
             }
         }
@@ -188,19 +188,22 @@ fn contained_in(assignments: HashMap<Vr, i32>, goal: i32) -> HashSet<Vr> {
     good
 }
 
-#[derive(Debug,Clone,Copy,Eq,PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum VerificationResult {
     Correct(Vr), // Indicates that the given Vr contains the correct output
     LinearNear(Vr, i32, i32), // Returns a linear adjustment LinearNear(vrx, m, b) indicating that vrx should be adjusted by vrx = vrx * m + b
     Invalid,
 }
 
-fn verify(all_vrs: HashSet<Vr>, tests: Vec<(HashMap<Vr, i32>,i32)>) -> VerificationResult {
+fn verify(all_vrs: HashSet<Vr>, tests: Vec<(HashMap<Vr, i32>, i32)>) -> VerificationResult {
     use VerificationResult::*;
 
     let mut good_vrs = all_vrs.clone();
     for (ass, result) in tests {
-        good_vrs = good_vrs.intersection(&contained_in(ass, result)).map(|r| *r).collect();
+        good_vrs = good_vrs
+            .intersection(&contained_in(ass, result))
+            .map(|r| *r)
+            .collect();
     }
 
     if good_vrs.is_empty() {
@@ -208,50 +211,108 @@ fn verify(all_vrs: HashSet<Vr>, tests: Vec<(HashMap<Vr, i32>,i32)>) -> Verificat
     } else {
         Correct(match good_vrs.iter().nth(0) {
             Some(r) => *r,
-            None => panic!("No first item on nonempty iter :/")
+            None => panic!("No first item on nonempty iter :/"),
         })
     }
 }
 
+fn as_output_set(full_output: Vec<(HashMap<Vr, i32>, i32)>) -> Vec<Vec<i32>> {
+    let mut r = vec![];
+    for (m, _) in full_output {
+        let mut i = 0;
+        let mut omap = HashMap::new();
+        for (k, v) in m {
+            i += 1;
+            let Vr(n) = k;
+            omap.insert(n, v);
+        }
+
+        let mut ivec = vec![];
+        for u in 0..i {
+            ivec.push(*omap.get(&u).expect("I mean, seriously?"));
+        }
+        r.push(ivec);
+    }
+    println!("Constructed output set {:?}", r);
+    r
+}
+
 fn main() {
 
-    let testinputs : HashMap<Vec<i32>, i32> = map!{
+    /*let insize = 1;
+    let testinputs: HashMap<Vec<i32>, i32> =
+        map!{
         vec![20] => 400,
         vec![1] => 1,
         vec![-1] => 1,
         vec![-20] => 400,
         vec![0] => 0,
         vec![400] => 160000
-    };
-    let mut p = Program::new(1);
+    };*/
 
-    let mut programs : HashSet<Program> = HashSet::new();
-    //let mut visited : HashSet<Vec<i32>> = HashSet::new();
+    let insize = 2;
+    let testinputs = map!{
+        vec![0,1] => 1,
+        vec![0,2] => 4,
+        vec![0,4] => 16,
+        vec![-1,1] => 0,
+        vec![0,0] => 0
+    };
+    let mut p = Program::new(insize);
+
+    let mut programs: HashSet<Program> = HashSet::new();
+    let mut visited = HashSet::new();
 
     programs.insert(p.clone());
 
     let mut testresults = vec![];
-    for (tin, tout) in testinputs {
-        testresults.push((p.clone().simulate(tin),tout));
+    for (tin, tout) in testinputs.clone() {
+        testresults.push((p.clone().simulate(tin), tout));
     }
-    //visited.insert(results.clone());
+    visited.insert(as_output_set(testresults.clone()));
 
-    println!("The null program {:?} is {:?}", p, verify(p.vr_set(), testresults));
+    println!(
+        "The null program {:?} is {:?}",
+        p,
+        verify(p.vr_set(), testresults)
+    );
 
-    /*loop {
+    loop {
         for partial in programs.clone() {
             programs = HashSet::new();
             for dp in partial.derive() {
-                let r = vals_only(dp.simulate(testinput.clone()));
-                if visited.contains(&r) {
-                    println!("discarding {:?} as equivalent to a prior partial", dp);
-                } else {
-                    println!("admitting {:?} as unique", dp);
-                    visited.insert(r);
-                    programs.insert(dp);
+                let mut results = vec![];
+                for (tin, tout) in testinputs.clone() {
+                    results.push((dp.simulate(tin), tout))
+                }
+
+                let valid = verify(dp.vr_set(), results.clone());
+                match valid {
+                    VerificationResult::Correct(cvr) => {
+                        println!(
+                            "Program {:?} has been verified, the result is in {:?}",
+                            dp,
+                            cvr
+                        );
+                        return;
+                    }
+                    VerificationResult::LinearNear(nvr, m, b) => {
+                        unimplemented!();
+                    }
+                    VerificationResult::Invalid => {
+                        let r = as_output_set(results);
+                        if visited.contains(&r) {
+                            println!("discarding {:?} as equivalent to a prior partial", dp);
+                        } else {
+                            println!("admitting {:?} as unique", dp);
+                            visited.insert(r);
+                            programs.insert(dp);
+                        }
+
+                    }
                 }
             }
         }
-    }*/
+    }
 
 }
