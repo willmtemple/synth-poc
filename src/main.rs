@@ -1,10 +1,8 @@
+extern crate typed_arena;
 extern crate rayon;
 
 use rayon::prelude::*;
-
-use std::collections::{HashSet, HashMap};
-use std::io;
-use std::io::prelude::*;
+use typed_arena::Arena;
 use std::num::Wrapping;
 
 macro_rules! vectuple(
@@ -19,266 +17,191 @@ macro_rules! vectuple(
     };
 );
 
-fn pause() {
-    let mut stdin = io::stdin();
-    let mut stdout = io::stdout();
+type Register = usize;
 
-    // We want the cursor to stay at the end of the line, so we print without a newline and flush manually.
-    write!(stdout, "Press any key to continue...").unwrap();
-    stdout.flush().unwrap();
-
-    // Read a single byte and discard
-    let _ = stdin.read(&mut [0u8]).unwrap();
+#[derive(Debug)]
+enum Instruction {
+    Mov(Register, Register),
+    Add(Register, Register),
+    Mul(Register, Register),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Vr(usize);
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Instr {
-    Mov(Vr, Vr),
-    Add(Vr, Vr),
-    Mul(Vr, Vr),
+#[derive(Debug)]
+enum ProgramType<'a> {
+    Program(Execution<'a>),
+    Start(&'a Vec<(Vec<isize>, isize)>),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Program {
-    code: Vec<Instr>,
-    vrs: Vec<Vr>,
-    next_vr: usize,
-    input_vrs: Vec<Vr>,
+#[derive(Debug)]
+struct Program<'a> {
+    parent: &'a ProgramType<'a>,
+    instruction: Instruction,
 }
 
-impl Program {
-    pub fn new(num_inputs: usize) -> Program {
-        let mut p = Program {
-            code: vec![],
-            vrs: vec![],
-            next_vr: 0,
-            input_vrs: vec![],
+#[derive(Debug)]
+struct Execution<'a> {
+    program: Program<'a>,
+    output: Vec<Vec<isize>>,
+}
+
+impl<'a> std::cmp::PartialEq for Execution<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.output == other.output
+    }
+}
+
+impl<'a> std::cmp::Eq for Execution<'a> {}
+
+impl<'a> std::cmp::PartialOrd for Execution<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'a> std::cmp::Ord for Execution<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.output.cmp(&other.output)
+    }
+}
+
+impl<'a> std::fmt::Display for Execution<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.program.fmt(f)
+    }
+}
+
+impl<'a> std::fmt::Display for Program<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.parent.fmt(f)?;
+        self.instruction.fmt(f)?;
+        Ok(())
+    }
+}
+
+impl<'a> std::fmt::Display for ProgramType<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            &ProgramType::Program(ref exe) => exe.fmt(f),
+            &ProgramType::Start(_) => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            &Instruction::Mov(r1, r2) => write!(f, "mov r{} r{}\n", r1, r2),
+            &Instruction::Add(r1, r2) => write!(f, "add r{} r{}\n", r1, r2),
+            &Instruction::Mul(r1, r2) => write!(f, "mul r{} r{}\n", r1, r2),
+        }
+    }
+}
+
+fn add_one_instruction<'a>(parent: &'a ProgramType) -> Vec<Program<'a>> {
+    let parent_register_count = match parent {
+        &ProgramType::Program(ref execution) => execution.output[0].len(),
+        &ProgramType::Start(ref tests) => tests[0].0.len(),
+    };
+
+    let mut new_programs = Vec::with_capacity(
+        parent_register_count + (parent_register_count * parent_register_count * 3),
+    );
+
+    // Copy to new register
+    for index in 0..parent_register_count {
+        new_programs.push(Program {
+            parent: parent,
+            instruction: Instruction::Mov(index, parent_register_count),
+        });
+    }
+
+    // Ops of two existing registers
+    for index in 0..parent_register_count {
+        for index2 in 0..parent_register_count {
+            new_programs.push(Program {
+                parent: parent,
+                instruction: Instruction::Mov(index, index2),
+            });
+            new_programs.push(Program {
+                parent: parent,
+                instruction: Instruction::Add(index, index2),
+            });
+            new_programs.push(Program {
+                parent: parent,
+                instruction: Instruction::Mul(index, index2),
+            });
+        }
+    }
+
+    new_programs
+}
+
+fn execute<'a>(program: Program<'a>) -> Execution<'a> {
+    let mut registers = match program.parent {
+        &ProgramType::Program(ref execution) => execution.output.clone(),
+        &ProgramType::Start(ref tests) => tests.iter().map(|t| t.0.clone()).collect(),
+    };
+
+    for state in &mut registers {
+        match program.instruction {
+            Instruction::Mov(r1, r2) => if state.len() <= r2 {
+                let temp = state[r1];
+                state.push(temp);
+            } else {
+                state[r2] = state[r1];
+            },
+            Instruction::Add(r1, r2) => {
+                let i1 = Wrapping(state[r1]);
+                let i2 = Wrapping(state[r2]);
+                state[r2] = (i1 + i2).0;
+            },
+            Instruction::Mul(r1, r2) => {
+                let i1 = Wrapping(state[r1]);
+                let i2 = Wrapping(state[r2]);
+                state[r2] = (i1 * i2).0;
+            },
         };
-
-        for _ in 0..num_inputs {
-            p.make_input_vr();
-        }
-
-        p
     }
 
-    pub fn len(&self) -> (usize, usize) {
-        (self.code.len(), self.vrs.len())
-    }
-
-    pub fn make_vr(&mut self) -> Vr {
-        let vr = Vr(self.next_vr);
-        self.next_vr += 1;
-        self.vrs.push(vr);
-        vr
-    }
-
-    fn make_input_vr(&mut self) -> Vr {
-        let vr = self.make_vr();
-        self.input_vrs.push(vr);
-        vr
-    }
-
-    fn vr_set(&self) -> HashSet<Vr> {
-        let mut r = HashSet::new();
-        for vr in self.vrs.clone() {
-            r.insert(vr);
-        }
-        r
-    }
-
-    pub fn add_instr(&mut self, instr: Instr) {
-        self.code.push(instr);
+    Execution {
+        program: program,
+        output: registers,
     }
 }
 
-pub trait Derive {
-    fn derive(&self) -> HashSet<Program>;
-}
+fn verify<'a>(
+    exe: &'a Execution<'a>,
+    tests: &Vec<(Vec<isize>, isize)>,
+) -> Option<(&'a Execution<'a>, usize)> {
+    let mut testcase = 0;
+    let mut correct_registers = exe.output[testcase]
+        .par_iter()
+        .enumerate()
+        .filter(|reg| *reg.1 == tests[testcase].1)
+        .map(|reg| reg.0)
+        .collect::<Vec<_>>();
 
-impl Derive for Program {
-    fn derive(&self) -> HashSet<Program> {
-        let mut d = HashSet::new();
-        // Aliases
-        for vr in self.vrs.clone() {
-            let mut newprog = self.clone();
-            let nvr = newprog.make_vr();
-            newprog.add_instr(Instr::Mov(vr, nvr));
-            d.insert(newprog);
-        }
-
-        // Operations
-
-        //Mul
-        for vrf in self.vrs.clone() {
-            for vrt in self.vrs.clone() {
-                let mut newprog = self.clone();
-                newprog.add_instr(Instr::Mul(vrf, vrt));
-                d.insert(newprog);
-            }
-        }
-
-        //Add
-        for vrf in self.vrs.clone() {
-            for vrt in self.vrs.clone() {
-                let mut newprog = self.clone();
-                newprog.add_instr(Instr::Add(vrf, vrt));
-                d.insert(newprog);
-            }
-        }
-
-
-        d
-    }
-}
-
-pub trait Simulate {
-    fn simulate(&self, inputs: Vec<i32>, output: bool) -> HashMap<Vr, i32>;
-}
-
-impl Simulate for Program {
-    fn simulate(&self, inputs: Vec<i32>, output: bool) -> HashMap<Vr, i32> {
-
-        use Instr::*;
-
-        assert!(inputs.len() == self.input_vrs.len());
-
-        let mut map = HashMap::new();
-
-        for (i, vr) in self.input_vrs.iter().enumerate() {
-            map.insert(*vr, inputs[i]);
-        }
-
-        for instr in self.code.clone() {
-            match instr {
-                Mov(ref from, to) => {
-                    let v_required = match map.get(from) {
-                        Some(v) => *v,
-                        None => panic!("Required register {:?} has no value.", from),
-                    };
-                    map.insert(to, v_required);
-                },
-                Mul(ref from, ref to) => {
-                    let f_required = match map.get(from) {
-                        Some(v) => Wrapping(*v),
-                        None => panic!("Required register {:?} has no value.", from),
-                    };
-                    let t_required = match map.get(to) {
-                        Some(v) => Wrapping(*v),
-                        None => panic!("Required register {:?} has no value.", from),
-                    };
-                    map.insert(*to, (f_required * t_required).0);
-                },
-                Add(ref from, ref to) => {
-                    let f_required = match map.get(from) {
-                        Some(v) => Wrapping(*v),
-                        None => panic!("Required register {:?} has no value.", from),
-                    };
-                    let t_required = match map.get(to) {
-                        Some(v) => Wrapping(*v),
-                        None => panic!("Required register {:?} has no value.", from),
-                    };
-                    map.insert(*to, (f_required + t_required).0);
-                },
-                _ => unimplemented!(),
-            }
-            if output { println!("{:?}", &map); }
-        }
-
-        map
-    }
-}
-
-fn contained_in(assignments: HashMap<Vr, i32>, goal: i32) -> HashSet<Vr> {
-    let mut good = HashSet::new();
-    for (vr, val) in assignments {
-        if val == goal {
-            good.insert(vr);
-        }
-    }
-    good
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum VerificationResult {
-    Correct(Vr), // Indicates that the given Vr contains the correct output
-    LinearNear(Vr, i32, i32), // Returns a linear adjustment LinearNear(vrx, m, b) indicating that vrx should be adjusted by vrx = vrx * m + b
-    Invalid,
-}
-
-fn verify(all_vrs: HashSet<Vr>, tests: Vec<(HashMap<Vr, i32>, i32)>) -> VerificationResult {
-    use VerificationResult::*;
-
-    let mut good_vrs = all_vrs.clone();
-    for (ass, result) in tests {
-        good_vrs = good_vrs
-            .intersection(&contained_in(ass, result))
-            .map(|r| *r)
-            .collect();
+    testcase += 1;
+    while !correct_registers.is_empty() && testcase < tests.len() {
+        let correct_again = exe.output[testcase]
+            .par_iter()
+            .enumerate()
+            .filter(|reg| *reg.1 == tests[testcase].1)
+            .map(|reg| reg.0)
+            .collect::<Vec<_>>();
+        correct_registers.retain(|r| correct_again.contains(r));
+        testcase += 1;
     }
 
-    if good_vrs.is_empty() {
-        Invalid
+    if correct_registers.is_empty() {
+        None
     } else {
-        Correct(match good_vrs.iter().nth(0) {
-            Some(r) => *r,
-            None => panic!("No first item on nonempty iter :/"),
-        })
+        Some((exe, correct_registers[0]))
     }
-}
-
-fn as_output_set(full_output: Vec<(HashMap<Vr, i32>, i32)>) -> Vec<Vec<i32>> {
-    let mut r = vec![];
-    for (m, _) in full_output {
-        let mut ivec = vec![];
-        for u in 0..m.keys().len() {
-            ivec.push(*m.get(&Vr(u)).unwrap());
-        }
-        r.push(ivec);
-    }
-    //println!("Constructed output set {:?}", r);
-    r
 }
 
 fn main() {
-
-    /*let insize = 1; // f(x) = x**2
-    let testinputs: HashMap<Vec<i32>, i32> =
-        map!{
-        vec![20] => 400,
-        vec![1] => 1,
-        vec![-1] => 1,
-        vec![-20] => 400,
-        vec![0] => 0,
-        vec![400] => 160000
-    };*/
-
-    /*let insize = 2; // f(x,y) = (x+y)**2
-    let testinputs = vectuple!{
-        vec![0,1] => 1,
-        vec![0,2] => 4,
-        vec![0,4] => 16,
-        vec![-1,1] => 0,
-        vec![0,0] => 0
-    };*/
-
-    let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
-    let testinputs =
-        vectuple!{
-        vec![0,0] => 0,
-vec![0,1] => 1,
-vec![0,-1] => 1,
-vec![1,1] => 5,
-vec![1,-1] => -1,
-vec![-1,1] => -1,
-vec![-1,-1] => 5
-    };
-
-    /*let insize = 3;
-    let testinputs = vectuple!{
+    let inputs = vectuple![
         vec![0,0,0] => 0,
 vec![0,0,1] => 1,
 vec![0,0,-1] => 1,
@@ -286,128 +209,55 @@ vec![0,1,0] => 1,
 vec![0,1,1] => 8,
 vec![0,1,-1] => 8,
 vec![0,-1,0] => -1,
-vec![0,-1,1] => 0,
-vec![0,-1,-1] => 0,
-vec![1,0,0] => 1,
-vec![1,0,1] => 8,
-vec![1,0,-1] => 8,
 vec![1,1,0] => 9,
 vec![1,1,1] => 28,
-vec![1,1,-1] => 28,
-vec![1,-1,0] => -1,
-vec![1,-1,1] => 0,
-vec![1,-1,-1] => 0,
 vec![-1,0,0] => -1,
 vec![-1,0,1] => 0,
 vec![-1,0,-1] => 0,
 vec![-1,1,0] => -1,
 vec![-1,1,1] => 0,
 vec![-1,1,-1] => 0,
-vec![-1,-1,0] => -7,
-vec![-1,-1,1] => 0,
-vec![-1,-1,-1] => 0
-    };*/
-    let mut p = Program::new(insize);
+vec![-8192,8192,1] => -67108863,
+vec![-8192,8192,-1] => -67108863,
+vec![-8192,-67108864,8192] => 0,
+vec![-8192,-67108864,-8192] => 0,
+vec![-67108864,0,8192] => 0,
+vec![-67108864,0,-8192] => 0,
+vec![-67108864,1,8192] => -67108863,
+vec![-67108864,1,-8192] => -67108863,
+vec![-67108864,-8192,-8192] => 0
+    ];
+    let starts = vec![ProgramType::Start(&inputs)];
 
-    let mut programs: HashSet<Program> = HashSet::new();
-    let mut visited = HashSet::new();
-
-    programs.insert(p.clone());
-
-    let mut testresults = vec![];
-    for (tin, tout) in testinputs.clone() {
-        testresults.push((p.clone().simulate(tin, false), tout));
-    }
-    visited.insert(as_output_set(testresults.clone()));
-
-    println!(
-        "The null program {:?} is {:?}",
-        p,
-        verify(p.vr_set(), testresults)
-    );
-
-    let mut generation = 0;
+    let old_code = Arena::new();
+    let mut old_generation = Some(old_code.alloc_extend(starts.into_iter()));
+    let mut generation = 1;
     loop {
-        println!("Generation {}", generation);
-        generation += 1;
-
-        let oprogs = programs.clone();
-        let nprogs = oprogs.par_iter().flat_map(|p| p.derive());
-
-        let results = nprogs
-            .map(|p| {
-                    let outputs =
-                        testinputs
-                            .par_iter()
-                            .map(|i| (p.simulate(i.0.clone(), false), i.1))
-                            .collect::<Vec<(HashMap<Vr,i32>,i32)>>();
-                    (p.clone(), as_output_set(outputs.clone()), verify(p.vr_set(), outputs))
-                })
-            .filter(|rt| !visited.contains(&rt.1))
-            .collect::<Vec<(Program, Vec<Vec<i32>>, VerificationResult)>>();
-
-        let cresults = results.clone();
-        let have_good_program = cresults.par_iter().find_any(|rt| match rt.2 {
-            VerificationResult::Invalid => false,
-            _ => true,
-        });
-
-        match have_good_program {
-            Some(&(ref p, _, vres)) => {
-                println!("Found good program: {:?}, result in {:?}", p, vres);
-                return;
-            },
-            None => {},
+        println!("{:?}", generation);
+        let new_programs = old_generation
+            .take()
+            .unwrap()
+            .par_iter()
+            .flat_map(|p| add_one_instruction(p));
+        let mut new_executions = new_programs.map(execute).collect::<Vec<_>>();
+        new_executions.sort_unstable();
+        new_executions.dedup();
+        if let Some(exe) = new_executions
+            .par_iter()
+            .filter_map(|exe| verify(&exe, &inputs))
+            .find_any(|_| true)
+        {
+            println!("Found \n{}", exe.0);
+            println!("Output gets stored in r{}", exe.1);
+            break;
         }
-
-        programs = results.par_iter().map(|rt| rt.0.clone()).collect::<HashSet<Program>>();
-
-        /*
-        let old_progs = programs.clone();
-        programs = HashSet::new();
-        for partial in old_progs {
-            for dp in partial.derive() {
-                let instrs = dp.len().0;
-                //println!("l = {:?}", dp.len());
-                let mut results = vec![];
-                for (tin, tout) in testinputs.clone() {
-                    match dp.simulate(tin, false) {
-                        Some(s) => results.push((s, tout)),
-                        None => unimplemented!()
-                    };
-                }
-
-                /*if dp.len() == (6,4) {
-                    println!("{:?} -> {:?}", dp.clone(), results.clone());
-                    pause();
-                }*/
-
-                let valid = verify(dp.vr_set(), results.clone());
-                match valid {
-                    VerificationResult::Correct(cvr) => {
-                        println!(
-                            "Program {:?} has been verified, the result is in {:?}",
-                            dp,
-                            cvr
-                        );
-                        return;
-                    }
-                    VerificationResult::LinearNear(nvr, m, b) => {
-                        unimplemented!();
-                    }
-                    VerificationResult::Invalid => {
-                        let r = as_output_set(results);
-                        if visited.contains(&r) {
-                            //println!("discarding {:?} as equivalent to a prior partial", dp);
-                        } else {
-                            //println!("admitting {:?} as unique", dp);
-                            visited.insert(r);
-                            programs.insert(dp);
-                        }
-
-                    }
-                }
-            }
-        }*/
+        old_generation = Some(
+            old_code.alloc_extend(
+                new_executions
+                    .into_iter()
+                    .map(|exe| ProgramType::Program(exe)),
+            ),
+        );
+        generation += 1;
     }
 }
