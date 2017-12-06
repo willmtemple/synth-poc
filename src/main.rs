@@ -1,4 +1,7 @@
 use std::collections::{HashSet, HashMap};
+use std::io;
+use std::io::prelude::*;
+use std::num::Wrapping;
 
 macro_rules! map(
     { $($key:expr => $value:expr),+ } => {
@@ -11,6 +14,18 @@ macro_rules! map(
         }
     };
 );
+
+fn pause() {
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    // We want the cursor to stay at the end of the line, so we print without a newline and flush manually.
+    write!(stdout, "Press any key to continue...").unwrap();
+    stdout.flush().unwrap();
+
+    // Read a single byte and discard
+    let _ = stdin.read(&mut [0u8]).unwrap();
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Vr(usize);
@@ -44,6 +59,10 @@ impl Program {
         }
 
         p
+    }
+
+    pub fn len(&self) -> (usize, usize) {
+        (self.code.len(), self.vrs.len())
     }
 
     pub fn make_vr(&mut self) -> Vr {
@@ -113,11 +132,11 @@ impl Derive for Program {
 }
 
 pub trait Simulate {
-    fn simulate(&self, inputs: Vec<i32>) -> HashMap<Vr, i32>;
+    fn simulate(&self, inputs: Vec<i32>) -> Option<HashMap<Vr, i32>>;
 }
 
 impl Simulate for Program {
-    fn simulate(&self, inputs: Vec<i32>) -> HashMap<Vr, i32> {
+    fn simulate(&self, inputs: Vec<i32>) -> Option<HashMap<Vr, i32>> {
 
         use Instr::*;
 
@@ -140,42 +159,32 @@ impl Simulate for Program {
                 }
                 Mul(ref from, ref to) => {
                     let f_required = match map.get(from) {
-                        Some(v) => *v,
+                        Some(v) => Wrapping(*v),
                         None => panic!("Required register {:?} has no value.", from),
                     };
                     let t_required = match map.get(to) {
-                        Some(v) => *v,
+                        Some(v) => Wrapping(*v),
                         None => panic!("Required register {:?} has no value.", from),
                     };
-                    map.insert(*to, f_required * t_required);
-                }
+                    map.insert(*to, (f_required * t_required).0);
+                },
                 Add(ref from, ref to) => {
                     let f_required = match map.get(from) {
-                        Some(v) => *v,
+                        Some(v) => Wrapping(*v),
                         None => panic!("Required register {:?} has no value.", from),
                     };
                     let t_required = match map.get(to) {
-                        Some(v) => *v,
+                        Some(v) => Wrapping(*v),
                         None => panic!("Required register {:?} has no value.", from),
                     };
-                    map.insert(*to, f_required + t_required);
+                    map.insert(*to, (f_required + t_required).0);
                 }
                 _ => unimplemented!(),
             }
         }
 
-        map
+        Some(map)
     }
-}
-
-fn vals_only(assignments: HashMap<Vr, i32>) -> Vec<i32> {
-    let mut r = vec![];
-
-    for (_, v) in assignments {
-        r.push(v);
-    }
-
-    r
 }
 
 fn contained_in(assignments: HashMap<Vr, i32>, goal: i32) -> HashSet<Vr> {
@@ -233,13 +242,13 @@ fn as_output_set(full_output: Vec<(HashMap<Vr, i32>, i32)>) -> Vec<Vec<i32>> {
         }
         r.push(ivec);
     }
-    println!("Constructed output set {:?}", r);
+    //println!("Constructed output set {:?}", r);
     r
 }
 
 fn main() {
 
-    /*let insize = 1;
+    /*let insize = 1; // f(x) = x**2
     let testinputs: HashMap<Vec<i32>, i32> =
         map!{
         vec![20] => 400,
@@ -250,13 +259,31 @@ fn main() {
         vec![400] => 160000
     };*/
 
-    let insize = 2;
+    /*let insize = 2; // f(x,y) = (x+y)**2
     let testinputs = map!{
         vec![0,1] => 1,
         vec![0,2] => 4,
         vec![0,4] => 16,
         vec![-1,1] => 0,
         vec![0,0] => 0
+    };*/
+
+    let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
+    let testinputs =
+        map!{
+        vec![0,0] => 0,
+vec![0,1] => 1,
+vec![0,-1] => 1,
+vec![0,512] => 262144,
+vec![0,-512] => 262144,
+vec![0,19683] => 387420489,
+vec![1,1] => 5,
+vec![1,-1] => -1,
+vec![1,512] => 263681,
+vec![-1,1] => -1,
+vec![-1,-1] => 5,
+vec![-19683,-1] => 387479539,
+vec![-19683,512] => 357449545
     };
     let mut p = Program::new(insize);
 
@@ -267,7 +294,11 @@ fn main() {
 
     let mut testresults = vec![];
     for (tin, tout) in testinputs.clone() {
-        testresults.push((p.clone().simulate(tin), tout));
+        let sim = match p.clone().simulate(tin) {
+            Some(r) => r,
+            None => panic!("Null program failed to run!")
+        };
+        testresults.push((sim, tout));
     }
     visited.insert(as_output_set(testresults.clone()));
 
@@ -281,9 +312,18 @@ fn main() {
         for partial in programs.clone() {
             programs = HashSet::new();
             for dp in partial.derive() {
+                println!("l = {:?}", dp.len());
                 let mut results = vec![];
                 for (tin, tout) in testinputs.clone() {
-                    results.push((dp.simulate(tin), tout))
+                    match dp.simulate(tin) {
+                        Some(s) => results.push((s, tout)),
+                        None => unimplemented!()
+                    };
+                }
+
+                if dp.len() == (6,4) {
+                    println!("{:?} -> {:?}", dp.clone(), results.clone());
+                    pause();
                 }
 
                 let valid = verify(dp.vr_set(), results.clone());
