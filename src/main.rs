@@ -136,11 +136,11 @@ impl Derive for Program {
 }
 
 pub trait Simulate {
-    fn simulate(&self, inputs: Vec<i32>, output: bool) -> Option<HashMap<Vr, i32>>;
+    fn simulate(&self, inputs: Vec<i32>, output: bool) -> HashMap<Vr, i32>;
 }
 
 impl Simulate for Program {
-    fn simulate(&self, inputs: Vec<i32>, output: bool) -> Option<HashMap<Vr, i32>> {
+    fn simulate(&self, inputs: Vec<i32>, output: bool) -> HashMap<Vr, i32> {
 
         use Instr::*;
 
@@ -188,7 +188,7 @@ impl Simulate for Program {
             if output { println!("{:?}", &map); }
         }
 
-        Some(map)
+        map
     }
 }
 
@@ -257,7 +257,7 @@ fn main() {
     };*/
 
     /*let insize = 2; // f(x,y) = (x+y)**2
-    let testinputs = map!{
+    let testinputs = vectuple!{
         vec![0,1] => 1,
         vec![0,2] => 4,
         vec![0,4] => 16,
@@ -265,7 +265,7 @@ fn main() {
         vec![0,0] => 0
     };*/
 
-    /*let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
+    let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
     let testinputs =
         vectuple!{
         vec![0,0] => 0,
@@ -275,9 +275,9 @@ vec![1,1] => 5,
 vec![1,-1] => -1,
 vec![-1,1] => -1,
 vec![-1,-1] => 5
-    };*/
+    };
 
-    let insize = 3;
+    /*let insize = 3;
     let testinputs = vectuple!{
         vec![0,0,0] => 0,
 vec![0,0,1] => 1,
@@ -306,7 +306,7 @@ vec![-1,1,-1] => 0,
 vec![-1,-1,0] => -7,
 vec![-1,-1,1] => 0,
 vec![-1,-1,-1] => 0
-    };
+    };*/
     let mut p = Program::new(insize);
 
     let mut programs: HashSet<Program> = HashSet::new();
@@ -316,11 +316,7 @@ vec![-1,-1,-1] => 0
 
     let mut testresults = vec![];
     for (tin, tout) in testinputs.clone() {
-        let sim = match p.clone().simulate(tin, false) {
-            Some(r) => r,
-            None => panic!("Null program failed to run!")
-        };
-        testresults.push((sim, tout));
+        testresults.push((p.clone().simulate(tin, false), tout));
     }
     visited.insert(as_output_set(testresults.clone()));
 
@@ -335,9 +331,36 @@ vec![-1,-1,-1] => 0
         println!("Generation {}", generation);
         generation += 1;
 
-        programs = programs.par_iter().flat_map(|p| p.derive()).collect(); 
+        let oprogs = programs.clone();
+        let nprogs = oprogs.par_iter().flat_map(|p| p.derive());
 
-        
+        let results = nprogs
+            .map(|p| {
+                    let outputs =
+                        testinputs
+                            .par_iter()
+                            .map(|i| (p.simulate(i.0.clone(), false), i.1))
+                            .collect::<Vec<(HashMap<Vr,i32>,i32)>>();
+                    (p.clone(), as_output_set(outputs.clone()), verify(p.vr_set(), outputs))
+                })
+            .filter(|rt| !visited.contains(&rt.1))
+            .collect::<Vec<(Program, Vec<Vec<i32>>, VerificationResult)>>();
+
+        let cresults = results.clone();
+        let have_good_program = cresults.par_iter().find_any(|rt| match rt.2 {
+            VerificationResult::Invalid => false,
+            _ => true,
+        });
+
+        match have_good_program {
+            Some(&(ref p, _, vres)) => {
+                println!("Found good program: {:?}, result in {:?}", p, vres);
+                return;
+            },
+            None => {},
+        }
+
+        programs = results.par_iter().map(|rt| rt.0.clone()).collect::<HashSet<Program>>();
 
         /*
         let old_progs = programs.clone();
