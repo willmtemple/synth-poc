@@ -1,16 +1,20 @@
+extern crate rayon;
+
+use rayon::prelude::*;
+
 use std::collections::{HashSet, HashMap};
 use std::io;
 use std::io::prelude::*;
 use std::num::Wrapping;
 
-macro_rules! map(
+macro_rules! vectuple(
     { $($key:expr => $value:expr),+ } => {
         {
-            let mut m = ::std::collections::HashMap::new();
+            let mut v = vec![];
             $(
-                m.insert($key, $value);
+                v.push(($key, $value));
             )+
-            m
+            v
         }
     };
 );
@@ -132,11 +136,11 @@ impl Derive for Program {
 }
 
 pub trait Simulate {
-    fn simulate(&self, inputs: Vec<i32>) -> Option<HashMap<Vr, i32>>;
+    fn simulate(&self, inputs: Vec<i32>, output: bool) -> Option<HashMap<Vr, i32>>;
 }
 
 impl Simulate for Program {
-    fn simulate(&self, inputs: Vec<i32>) -> Option<HashMap<Vr, i32>> {
+    fn simulate(&self, inputs: Vec<i32>, output: bool) -> Option<HashMap<Vr, i32>> {
 
         use Instr::*;
 
@@ -156,7 +160,7 @@ impl Simulate for Program {
                         None => panic!("Required register {:?} has no value.", from),
                     };
                     map.insert(to, v_required);
-                }
+                },
                 Mul(ref from, ref to) => {
                     let f_required = match map.get(from) {
                         Some(v) => Wrapping(*v),
@@ -178,9 +182,10 @@ impl Simulate for Program {
                         None => panic!("Required register {:?} has no value.", from),
                     };
                     map.insert(*to, (f_required + t_required).0);
-                }
+                },
                 _ => unimplemented!(),
             }
+            if output { println!("{:?}", &map); }
         }
 
         Some(map)
@@ -228,17 +233,9 @@ fn verify(all_vrs: HashSet<Vr>, tests: Vec<(HashMap<Vr, i32>, i32)>) -> Verifica
 fn as_output_set(full_output: Vec<(HashMap<Vr, i32>, i32)>) -> Vec<Vec<i32>> {
     let mut r = vec![];
     for (m, _) in full_output {
-        let mut i = 0;
-        let mut omap = HashMap::new();
-        for (k, v) in m {
-            i += 1;
-            let Vr(n) = k;
-            omap.insert(n, v);
-        }
-
         let mut ivec = vec![];
-        for u in 0..i {
-            ivec.push(*omap.get(&u).expect("I mean, seriously?"));
+        for u in 0..m.keys().len() {
+            ivec.push(*m.get(&Vr(u)).unwrap());
         }
         r.push(ivec);
     }
@@ -268,22 +265,47 @@ fn main() {
         vec![0,0] => 0
     };*/
 
-    let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
+    /*let insize = 2; // f(x,y,z) = (x * y + z**2)**2 * z, generated with real python
     let testinputs =
-        map!{
+        vectuple!{
         vec![0,0] => 0,
 vec![0,1] => 1,
 vec![0,-1] => 1,
-vec![0,512] => 262144,
-vec![0,-512] => 262144,
-vec![0,19683] => 387420489,
 vec![1,1] => 5,
 vec![1,-1] => -1,
-vec![1,512] => 263681,
 vec![-1,1] => -1,
-vec![-1,-1] => 5,
-vec![-19683,-1] => 387479539,
-vec![-19683,512] => 357449545
+vec![-1,-1] => 5
+    };*/
+
+    let insize = 3;
+    let testinputs = vectuple!{
+        vec![0,0,0] => 0,
+vec![0,0,1] => 1,
+vec![0,0,-1] => 1,
+vec![0,1,0] => 1,
+vec![0,1,1] => 8,
+vec![0,1,-1] => 8,
+vec![0,-1,0] => -1,
+vec![0,-1,1] => 0,
+vec![0,-1,-1] => 0,
+vec![1,0,0] => 1,
+vec![1,0,1] => 8,
+vec![1,0,-1] => 8,
+vec![1,1,0] => 9,
+vec![1,1,1] => 28,
+vec![1,1,-1] => 28,
+vec![1,-1,0] => -1,
+vec![1,-1,1] => 0,
+vec![1,-1,-1] => 0,
+vec![-1,0,0] => -1,
+vec![-1,0,1] => 0,
+vec![-1,0,-1] => 0,
+vec![-1,1,0] => -1,
+vec![-1,1,1] => 0,
+vec![-1,1,-1] => 0,
+vec![-1,-1,0] => -7,
+vec![-1,-1,1] => 0,
+vec![-1,-1,-1] => 0
     };
     let mut p = Program::new(insize);
 
@@ -294,7 +316,7 @@ vec![-19683,512] => 357449545
 
     let mut testresults = vec![];
     for (tin, tout) in testinputs.clone() {
-        let sim = match p.clone().simulate(tin) {
+        let sim = match p.clone().simulate(tin, false) {
             Some(r) => r,
             None => panic!("Null program failed to run!")
         };
@@ -308,23 +330,34 @@ vec![-19683,512] => 357449545
         verify(p.vr_set(), testresults)
     );
 
+    let mut generation = 0;
     loop {
-        for partial in programs.clone() {
-            programs = HashSet::new();
+        println!("Generation {}", generation);
+        generation += 1;
+
+        programs = programs.par_iter().flat_map(|p| p.derive()).collect(); 
+
+        
+
+        /*
+        let old_progs = programs.clone();
+        programs = HashSet::new();
+        for partial in old_progs {
             for dp in partial.derive() {
-                println!("l = {:?}", dp.len());
+                let instrs = dp.len().0;
+                //println!("l = {:?}", dp.len());
                 let mut results = vec![];
                 for (tin, tout) in testinputs.clone() {
-                    match dp.simulate(tin) {
+                    match dp.simulate(tin, false) {
                         Some(s) => results.push((s, tout)),
                         None => unimplemented!()
                     };
                 }
 
-                if dp.len() == (6,4) {
+                /*if dp.len() == (6,4) {
                     println!("{:?} -> {:?}", dp.clone(), results.clone());
                     pause();
-                }
+                }*/
 
                 let valid = verify(dp.vr_set(), results.clone());
                 match valid {
@@ -342,9 +375,9 @@ vec![-19683,512] => 357449545
                     VerificationResult::Invalid => {
                         let r = as_output_set(results);
                         if visited.contains(&r) {
-                            println!("discarding {:?} as equivalent to a prior partial", dp);
+                            //println!("discarding {:?} as equivalent to a prior partial", dp);
                         } else {
-                            println!("admitting {:?} as unique", dp);
+                            //println!("admitting {:?} as unique", dp);
                             visited.insert(r);
                             programs.insert(dp);
                         }
@@ -352,7 +385,6 @@ vec![-19683,512] => 357449545
                     }
                 }
             }
-        }
+        }*/
     }
-
 }
