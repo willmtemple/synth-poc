@@ -1,47 +1,36 @@
+#![feature(conservative_impl_trait)]
+
 extern crate typed_arena;
-extern crate rayon;
-
-use rayon::prelude::*;
 use typed_arena::Arena;
-use std::num::Wrapping;
 
-macro_rules! vectuple(
-    { $($key:expr => $value:expr),+ } => {
-        {
-            let mut v = vec![];
-            $(
-                v.push(($key, $value));
-            )+
-            v
-        }
-    };
-);
+extern crate rayon;
+use rayon::prelude::*;
 
-type Register = usize;
+use std::collections::HashSet;
+
+type RegisterIndex = usize;
+type Value = isize;
 
 #[derive(Debug)]
 enum Instruction {
-    Mov(Register, Register),
-    Add(Register, Register),
-    Mul(Register, Register),
-}
-
-#[derive(Debug)]
-enum ProgramType<'a> {
-    Program(Execution<'a>),
-    Start(&'a Vec<(Vec<isize>, isize)>),
+    Mov(RegisterIndex, RegisterIndex),
+    Add(RegisterIndex, RegisterIndex),
+    Mul(RegisterIndex, RegisterIndex),
+    //Sub(RegisterIndex, RegisterIndex),
+    Neg(RegisterIndex),
 }
 
 #[derive(Debug)]
 struct Program<'a> {
-    parent: &'a ProgramType<'a>,
-    instruction: Instruction,
+    parent: Option<&'a Execution<'a>>,
+    instruction: Option<Instruction>,
 }
 
 #[derive(Debug)]
 struct Execution<'a> {
     program: Program<'a>,
-    output: Vec<Vec<isize>>,
+    output: Vec<Vec<Value>>,
+    ordering: Vec<RegisterIndex>,
 }
 
 impl<'a> std::cmp::PartialEq for Execution<'a> {
@@ -52,37 +41,18 @@ impl<'a> std::cmp::PartialEq for Execution<'a> {
 
 impl<'a> std::cmp::Eq for Execution<'a> {}
 
-impl<'a> std::cmp::PartialOrd for Execution<'a> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<'a> std::cmp::Ord for Execution<'a> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.output.cmp(&other.output)
+impl<'a> std::hash::Hash for Execution<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.output.hash(state)
     }
 }
 
 impl<'a> std::fmt::Display for Execution<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.program.fmt(f)
-    }
-}
-
-impl<'a> std::fmt::Display for Program<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.parent.fmt(f)?;
-        self.instruction.fmt(f)?;
-        Ok(())
-    }
-}
-
-impl<'a> std::fmt::Display for ProgramType<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            &ProgramType::Program(ref exe) => exe.fmt(f),
-            &ProgramType::Start(_) => Ok(()),
+        self.program.parent.map_or(Ok(()), |p| p.fmt(f))?;
+        match self.program.instruction {
+            Some(ref inst) => inst.fmt(f),
+            None => Ok(())
         }
     }
 }
@@ -90,28 +60,27 @@ impl<'a> std::fmt::Display for ProgramType<'a> {
 impl std::fmt::Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            &Instruction::Mov(r1, r2) => write!(f, "mov r{} r{}\n", r1, r2),
-            &Instruction::Add(r1, r2) => write!(f, "add r{} r{}\n", r1, r2),
-            &Instruction::Mul(r1, r2) => write!(f, "mul r{} r{}\n", r1, r2),
+            &Instruction::Mov(r1, r2) => write!(f, "\nmov r{} r{}", r1, r2),
+            &Instruction::Add(r1, r2) => write!(f, "\nadd r{} r{}", r1, r2),
+            &Instruction::Mul(r1, r2) => write!(f, "\nmul r{} r{}", r1, r2),
+            //&Instruction::Sub(r1, r2) => write!(f, "\nsub r{} r{}", r1, r2),
+            &Instruction::Neg(r) => write!(f, "\nneg r{}", r),
         }
     }
 }
 
-fn add_one_instruction<'a>(parent: &'a ProgramType) -> Vec<Program<'a>> {
-    let parent_register_count = match parent {
-        &ProgramType::Program(ref execution) => execution.output[0].len(),
-        &ProgramType::Start(ref tests) => tests[0].0.len(),
-    };
+fn add_one_instruction<'a>(parent: &'a Execution) -> Vec<Program<'a>> {
+    let parent_register_count = parent.output[0].len();
 
     let mut new_programs = Vec::with_capacity(
-        parent_register_count + (parent_register_count * parent_register_count * 3),
+        parent_register_count * 2 + (parent_register_count * parent_register_count * 3),
     );
 
     // Copy to new register
     for index in 0..parent_register_count {
         new_programs.push(Program {
-            parent: parent,
-            instruction: Instruction::Mov(index, parent_register_count),
+            parent: Some(parent),
+            instruction: Some(Instruction::Mov(index, parent_register_count)),
         });
     }
 
@@ -119,145 +88,153 @@ fn add_one_instruction<'a>(parent: &'a ProgramType) -> Vec<Program<'a>> {
     for index in 0..parent_register_count {
         for index2 in 0..parent_register_count {
             new_programs.push(Program {
-                parent: parent,
-                instruction: Instruction::Mov(index, index2),
+                parent: Some(parent),
+                instruction: Some(Instruction::Mov(index, index2)),
             });
             new_programs.push(Program {
-                parent: parent,
-                instruction: Instruction::Add(index, index2),
+                parent: Some(parent),
+                instruction: Some(Instruction::Add(index, index2)),
             });
             new_programs.push(Program {
-                parent: parent,
-                instruction: Instruction::Mul(index, index2),
+                parent: Some(parent),
+                instruction: Some(Instruction::Mul(index, index2)),
             });
+            /*new_programs.push(Program {
+                parent: Some(parent),
+                instruction: Some(Instruction::Sub(index, index2)),
+            });*/
         }
+        new_programs.push(Program {
+            parent: Some(parent),
+            instruction: Some(Instruction::Neg(index)),
+        })
     }
 
+    debug_assert!(new_programs.len() == new_programs.capacity());
     new_programs
 }
 
 fn execute<'a>(program: Program<'a>) -> Execution<'a> {
-    let mut registers = match program.parent {
-        &ProgramType::Program(ref execution) => execution.output.clone(),
-        &ProgramType::Start(ref tests) => tests.iter().map(|t| t.0.clone()).collect(),
-    };
+    let mut all_testcases = program.parent.unwrap().output.clone();
 
-    for state in &mut registers {
+    for mut testcase in &mut all_testcases {
         match program.instruction {
-            Instruction::Mov(r1, r2) => if state.len() <= r2 {
-                let temp = state[r1];
-                state.push(temp);
+            None => unreachable!(),
+            Some(Instruction::Mov(r1, r2)) => if testcase.len() <= r2 {
+                let temp = testcase[r1];
+                testcase.push(temp);
             } else {
-                state[r2] = state[r1];
+                testcase[r2] = testcase[r1];
             },
-            Instruction::Add(r1, r2) => {
-                let i1 = Wrapping(state[r1]);
-                let i2 = Wrapping(state[r2]);
-                state[r2] = (i1 + i2).0;
-            },
-            Instruction::Mul(r1, r2) => {
-                let i1 = Wrapping(state[r1]);
-                let i2 = Wrapping(state[r2]);
-                state[r2] = (i1 * i2).0;
-            },
+            Some(Instruction::Add(r1, r2)) => testcase[r2] = testcase[r1].wrapping_add(testcase[r2]),
+            Some(Instruction::Mul(r1, r2)) => testcase[r2] = testcase[r1].wrapping_mul(testcase[r2]),
+            //Some(Instruction::Sub(r1, r2)) => testcase[r2] = testcase[r1].wrapping_add(-testcase[r2]),
+            Some(Instruction::Neg(r)) => testcase[r] = testcase[r].wrapping_mul(-1),
         };
     }
 
     Execution {
         program: program,
-        output: registers,
+        output: all_testcases,
+        ordering: vec![],
     }
 }
 
-fn verify<'a>(
-    exe: &'a Execution<'a>,
-    tests: &Vec<(Vec<isize>, isize)>,
-) -> Option<(&'a Execution<'a>, usize)> {
-    let mut testcase = 0;
-    let mut correct_registers = exe.output[testcase]
-        .par_iter()
-        .enumerate()
-        .filter(|reg| *reg.1 == tests[testcase].1)
-        .map(|reg| reg.0)
-        .collect::<Vec<_>>();
+fn verify<'a>(exe: &'a Execution<'a>, tests: &Vec<isize>) -> Option<RegisterIndex> {
+    let register_count = exe.output[0].len();
 
-    testcase += 1;
-    while !correct_registers.is_empty() && testcase < tests.len() {
-        let correct_again = exe.output[testcase]
-            .par_iter()
-            .enumerate()
-            .filter(|reg| *reg.1 == tests[testcase].1)
-            .map(|reg| reg.0)
-            .collect::<Vec<_>>();
-        correct_registers.retain(|r| correct_again.contains(r));
-        testcase += 1;
-    }
-
-    if correct_registers.is_empty() {
-        None
-    } else {
-        Some((exe, correct_registers[0]))
-    }
+    (0..register_count).find(|output_register| {
+        exe.output
+            .iter()
+            .zip(tests.iter())
+            .all(|(output, test_value)| {
+                output[*output_register] == *test_value
+            })
+    })
 }
+
+macro_rules! testcases [
+    ( $( ([ $($input: expr),* ], $output:expr), )* ) => {
+        {
+        let mut inputs: Vec<Vec<Value>> = Vec::new();
+        let mut outputs: Vec<Value> = Vec::new();
+
+        $(
+            let mut inputrow = Vec::new();
+            $(
+                inputrow.push($input);
+            )*
+            inputs.push(inputrow);
+            outputs.push($output);
+        )*
+
+        (inputs, outputs)
+        }
+    }
+];
 
 fn main() {
-    let inputs = vectuple![
-        vec![0,0,0] => 0,
-vec![0,0,1] => 1,
-vec![0,0,-1] => 1,
-vec![0,1,0] => 1,
-vec![0,1,1] => 8,
-vec![0,1,-1] => 8,
-vec![0,-1,0] => -1,
-vec![1,1,0] => 9,
-vec![1,1,1] => 28,
-vec![-1,0,0] => -1,
-vec![-1,0,1] => 0,
-vec![-1,0,-1] => 0,
-vec![-1,1,0] => -1,
-vec![-1,1,1] => 0,
-vec![-1,1,-1] => 0,
-vec![-8192,8192,1] => -67108863,
-vec![-8192,8192,-1] => -67108863,
-vec![-8192,-67108864,8192] => 0,
-vec![-8192,-67108864,-8192] => 0,
-vec![-67108864,0,8192] => 0,
-vec![-67108864,0,-8192] => 0,
-vec![-67108864,1,8192] => -67108863,
-vec![-67108864,1,-8192] => -67108863,
-vec![-67108864,-8192,-8192] => 0
+    let (inputs, outputs) = testcases![
+        ([0, 0], 0),
+        ([0, 1], -1),
+        ([1, 1], 0),
+        ([1, 0], 1),
+        ([0, -1], 1999),
+        ([-1, 0], -1),
+        ([-1, -1], 0),
+        ([1, -1], 2),
+        ([-1, 1], -2),       
     ];
-    let starts = vec![ProgramType::Start(&inputs)];
 
-    let old_code = Arena::new();
-    let mut old_generation = Some(old_code.alloc_extend(starts.into_iter()));
+    let mut starts = HashSet::default();
+    let start_exec = Execution {
+        program: Program {
+            parent: None,
+            instruction: None,
+        },
+        output: inputs,
+        ordering: vec![],
+    };
+
+    if verify(&start_exec, &outputs).is_some() {
+        println!("Get out.");
+        return;
+    }
+
+    starts.insert(start_exec);
+    let old_executions = Arena::new();
+    //let mut prev_generations = Vec::new();
+    let mut last_generation = Some(&*old_executions.alloc(starts));
     let mut generation = 1;
+
     loop {
-        println!("{:?}", generation);
-        let new_programs = old_generation
-            .take()
-            .unwrap()
+        println!("{}", generation);
+        //prev_generations.push(last_generation.clone().unwrap());
+
+        let old_programs = last_generation.take().unwrap().into_par_iter();
+
+        let new_programs = old_programs.flat_map(add_one_instruction);
+
+        let new_executions = new_programs.map(execute);
+
+        let filtered_executions = new_executions
+            // .filter(|newexe| {
+            //     prev_generations
+            //         .iter()
+            //         .all(|prevgen| !prevgen.contains(newexe))
+            // })
+            .collect::<HashSet<_>>();
+
+        if let Some(exe) = filtered_executions
             .par_iter()
-            .flat_map(|p| add_one_instruction(p));
-        let mut new_executions = new_programs.map(execute).collect::<Vec<_>>();
-        new_executions.sort_unstable();
-        new_executions.dedup();
-        if let Some(exe) = new_executions
-            .par_iter()
-            .filter_map(|exe| verify(&exe, &inputs))
-            .find_any(|_| true)
+            .find_any(|exe| verify(&exe, &outputs).is_some())
         {
-            println!("Found \n{}", exe.0);
-            println!("Output gets stored in r{}", exe.1);
+            println!("Found {}", exe);
+            println!("Output gets stored in r{}", "?"); // TODO
             break;
         }
-        old_generation = Some(
-            old_code.alloc_extend(
-                new_executions
-                    .into_iter()
-                    .map(|exe| ProgramType::Program(exe)),
-            ),
-        );
+
+        last_generation = Some(old_executions.alloc(filtered_executions));
         generation += 1;
     }
 }
