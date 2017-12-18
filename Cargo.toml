@@ -5,3 +5,4 @@ authors = ["wtemple"]
 
 [dependencies]
 rayon = "0.9"
+typed-arena = "*"
